@@ -31,7 +31,11 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout tim
 
 				msg, err := nmea.Parse(sentence)
 				if err != nil {
-					errors <- fmt.Errorf("Invalid NMEA message, err:", err)
+					errors <- fmt.Errorf("Wrong NMEA message format, err: %s", err.Error())
+					continue
+				}
+				if msg == nil {
+					errors <- fmt.Errorf("Invalid NMEA message, got: %s", sentence)
 					continue
 				}
 				queue <- msg

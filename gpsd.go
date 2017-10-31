@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -39,6 +38,12 @@ func main() {
 		if charDevicePath, err = autodetect(*autoDetectTimeout); err != nil {
 			log.Fatalln(err.Error())
 		}
+
+		if charDevicePath == nil {
+			log.Fatalln("Unable to autodetect GPS device in", timeout.String())
+		}
+
+		log.Println("Autodetect", *charDevicePath, "char device, it could be gps serial port.")
 	}
 
 	if err = validateCharDevice(*charDevicePath); err != nil {
@@ -69,29 +74,9 @@ func main() {
 	for {
 		select {
 		case msg := <-queue:
-			log.Printf("Handle NMEA message: %s (since: %s)", msg.Serialize())
+			log.Printf("Handle NMEA message: %s", msg.Serialize())
 		case err := <-errors:
 			log.Println(err)
 		}
 	}
-}
-
-func validateCharDevice(path string) error {
-	// Validate input file
-	fi, err := os.Stat(path)
-
-	if os.IsNotExist(err) {
-		return fmt.Errorf("File", path, "doesn't exists")
-	}
-
-	if err != nil {
-		return fmt.Errorf("Unable to use file", path, "as input, err:", err)
-	}
-
-	// Bitwises to validate right input file
-	if fi.Mode()&os.ModeCharDevice == 0 || fi.Mode()&os.ModeDevice == 0 {
-		return fmt.Errorf("Input file should be a char device file (got: %s, wanted: %s)\n", fi.Mode(), os.FileMode(os.ModeCharDevice|os.ModeDevice).String())
-	}
-
-	return nil
 }
