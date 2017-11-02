@@ -51,13 +51,12 @@ func main() {
 	}
 
 	// Try to open file or fatal
-	f, err := os.Open(*charDevicePath)
+	gpsDev, err := NewGPSDevice(*charDevicePath)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	// Begin to read GPS informations and parse them
-	gpsDev := GPSDevice{f}
 	queue, errors := make(chan nmea.NMEA), make(chan error)
 	quit := gpsDev.Monitor(queue, errors, *timeout)
 
