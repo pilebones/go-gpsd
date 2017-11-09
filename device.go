@@ -13,6 +13,24 @@ const (
 	THRESHOLD = 2048 // To precise
 )
 
+func IsCharDevice(path string) (err error) {
+	var fi os.FileInfo
+	if fi, err = os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("File %s doesn't exists", path)
+		}
+		return fmt.Errorf("Unable to use file %sas input, err: %s", path, err.Error())
+	}
+
+	// Bitwises to validate right input file
+	if fi.Mode()&os.ModeCharDevice == 0 || fi.Mode()&os.ModeDevice == 0 {
+		return fmt.Errorf("Input file should be a char device file (got: %s, wanted: %s)\n",
+			fi.Mode(), os.FileMode(os.ModeCharDevice|os.ModeDevice).String())
+	}
+
+	return nil
+}
+
 type GPSDevice struct {
 	*os.File
 }

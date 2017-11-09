@@ -36,7 +36,7 @@ func main() {
 
 	if *autoDetectMode {
 		if charDevicePath, err = autodetect(*autoDetectTimeout); err != nil {
-			log.Fatalln(err.Error())
+			log.Fatalln("Unable to autodetect GPS device, err:", err.Error())
 		}
 
 		if charDevicePath == nil {
@@ -46,7 +46,7 @@ func main() {
 		log.Println("Autodetect", *charDevicePath, "char device, it could be gps serial port.")
 	}
 
-	if err = validateCharDevice(*charDevicePath); err != nil {
+	if err = IsCharDevice(*charDevicePath); err != nil {
 		log.Fatalln(err.Error())
 	}
 
