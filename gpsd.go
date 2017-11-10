@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
@@ -35,19 +36,33 @@ func main() {
 	var err error
 
 	if *autoDetectMode {
-		if charDevicePath, err = autodetect(*autoDetectTimeout); err != nil {
+		if charDevicePath, err = Autodetect(*autoDetectTimeout); err != nil {
 			log.Fatalln("Unable to autodetect GPS device, err:", err.Error())
 		}
 
 		if charDevicePath == nil {
-			log.Fatalln("Unable to autodetect GPS device in", timeout.String())
+			log.Fatalln("Unable to autodetect GPS device in", autoDetectTimeout.String())
 		}
 
 		log.Println("Autodetect", *charDevicePath, "char device, it could be gps serial port.")
-	}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
 
-	if err = IsCharDevice(*charDevicePath); err != nil {
-		log.Fatalln(err.Error())
+		worker := NewFileAnalyzerWorker()
+		worker.CheckFile(*charDevicePath, ctx)
+
+		select {
+		case <-ctx.Done():
+			log.Fatalln("Unable to validate GPS device in", timeout.String())
+		case result := <-worker.Analyzed:
+			if result.Error != nil {
+				log.Fatalln(*charDevicePath, " is not a valid GPS device, err:", result.Error.Error())
+			}
+			if !result.Found {
+				log.Fatalln(*charDevicePath, " doesn't contains NMEA message like a GPS device")
+			}
+		}
 	}
 
 	// Try to open file or fatal

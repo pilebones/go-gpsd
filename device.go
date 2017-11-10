@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -101,5 +102,30 @@ func (d *GPSDevice) ReadSentence(timeout time.Duration) (string, error) {
 			}
 		}
 	}
+}
 
+func (d *GPSDevice) ReadSentenceWithContext(ctx context.Context) (string, error) {
+	buf := make([]byte, os.Getpagesize())
+	sentence := make([]byte, 0)
+	for {
+		select {
+		case <-ctx.Done():
+			return string(sentence), fmt.Errorf("timeout")
+		default:
+			count, err := d.Read(buf)
+			if err != nil {
+				return "", err
+			}
+
+			if count == 0 || bytes.Equal(buf[:count], []byte("\n")) {
+				return string(sentence), nil
+			}
+
+			sentence = append(sentence, buf[:count]...)
+
+			if len(sentence) > THRESHOLD {
+				return "", fmt.Errorf("Message too long to be a GPS sentence")
+			}
+		}
+	}
 }

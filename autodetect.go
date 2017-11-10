@@ -1,9 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/pilebones/go-udev/crawler"
@@ -21,31 +21,45 @@ func getGPSMatcher() netlink.Matcher {
 	}
 }
 
-func autodetect(timeout time.Duration) (*string, error) {
-
+// Autodetect try to detect new or existing plugged GPS device
+// This function should be run as root to have right privilege
+func Autodetect(timeout time.Duration) (*string, error) {
 	pathQueue, errQueue := make(chan string), make(chan error)
 	matcher := getGPSMatcher()
+	worker := NewFileAnalyzerWorker()
 
-	go lookupExistingDevices(matcher, pathQueue, errQueue, timeout)
-	go monitorDevices(matcher, pathQueue, errQueue, timeout)
+	// Initialize context to stop goroutines when timeout or found device
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	select {
-	case err := <-errQueue:
-		return nil, err
-	case path := <-pathQueue:
-		return &path, nil
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("Reach timeout %s", timeout.String())
+	go lookupExistingDevices(matcher, pathQueue, errQueue, ctx)
+	go monitorDevices(matcher, pathQueue, errQueue, ctx)
+
+	for {
+		select {
+		case result := <-worker.Analyzed:
+			if result.Error != nil {
+				errQueue <- result.Error
+			}
+
+			if result.Found {
+				return &result.Path, nil
+			}
+		case err := <-errQueue:
+			return nil, err
+		case path := <-pathQueue:
+			worker.CheckFile(path, ctx)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("Reach timeout %s", timeout.String())
+		}
 	}
 }
 
-func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, timeout time.Duration) {
-
+// lookupExistingDevices lookup inside /sys/devices uevent struct which match rules from matcher
+func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
 	queue := make(chan crawler.Device)
 	loop := true
 	quit := crawler.ExistingDevices(queue, errQueue, matcher)
-	var wg sync.WaitGroup
-	w := NewFileAnalyzerWorker()
 
 	defer func() {
 		quit <- struct{}{} // Close properly udev monitor
@@ -53,34 +67,20 @@ func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQu
 
 	for loop {
 		select {
-		case result := <-w.Analyzed:
-			wg.Done()
-			/*if result.Error != nil {
-				log.Println(result.Path, "not GPS device", result.Error.Error())
-			}*/
-			if result.Found {
-				pathQueue <- result.Path
-				loop = false
-			}
+		case <-ctx.Done():
+			loop = false
 		case device := <-queue:
 			if name, exists := device.Env["DEVNAME"]; exists {
-				path := fmt.Sprintf("/dev/%s", name)
-
-				wg.Add(1)
-				w.CheckFile(path, timeout)
+				pathQueue <- fmt.Sprintf("/dev/%s", name)
 			}
-		case <-time.After(timeout):
-			loop = false
-			errQueue <- fmt.Errorf("Reach timeout %s", timeout.String())
 		}
 	}
-
-	wg.Wait() // Wait batch of goroutines
 }
 
-func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, timeout time.Duration) {
-
+// monitorDevices listen UEvent kernel socket and try to match rules from matcher with handled uevent
+func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
 	conn := new(netlink.UEventConn)
+
 	if err := conn.Connect(); err != nil {
 		errQueue <- fmt.Errorf("Unable to connect to kernel netlink socket, err: %s", err.Error())
 		return
@@ -89,8 +89,6 @@ func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue cha
 	queue := make(chan netlink.UEvent)
 	quit := conn.Monitor(queue, errQueue, matcher)
 	loop := true
-	var wg sync.WaitGroup
-	w := NewFileAnalyzerWorker()
 
 	defer func() {
 		quit <- struct{}{} // Close properly udev monitor
@@ -99,27 +97,13 @@ func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue cha
 
 	for loop {
 		select {
-		case result := <-w.Analyzed:
-			wg.Done()
-			/*if result.Error != nil {
-				log.Println(result.Path, "not GPS device", result.Error.Error())
-			}*/
-			if result.Found {
-				pathQueue <- result.Path
-				loop = false
-			}
 		case uevent := <-queue:
 			log.Println("Handle uevent:", uevent.String())
+			pathQueue <- fmt.Sprintf("/dev/%s", uevent.Env["DEVNAME"])
+		case <-ctx.Done():
 			loop = false
-			wg.Add(1)
-			w.CheckFile(fmt.Sprintf("/dev/%s", uevent.Env["DEVNAME"]), timeout)
-		case <-time.After(timeout):
-			loop = false
-			errQueue <- fmt.Errorf("Reach timeout %s", timeout.String())
 		}
 	}
-
-	wg.Wait() // Wait batch of goroutines
 }
 
 type FileAnalyzerResult struct {
@@ -136,6 +120,8 @@ func NewFileAnalyzerResult(found bool, path string, err error) FileAnalyzerResul
 	}
 }
 
+// FileAnalyzerWorker is a worker to analyze a file to
+// detect if the content match NMEA protocol
 type FileAnalyzerWorker struct {
 	Analyzed chan FileAnalyzerResult
 }
@@ -146,8 +132,8 @@ func NewFileAnalyzerWorker() FileAnalyzerWorker {
 	}
 }
 
-func (w *FileAnalyzerWorker) CheckFile(path string, timeout time.Duration) {
-	log.Println("DetectGPSDeviceWorker check", path)
+func (w *FileAnalyzerWorker) CheckFile(path string, ctx context.Context) {
+	// log.Println("DetectGPSDeviceWorker check", path)
 
 	if err := IsCharDevice(path); err != nil {
 		w.Analyzed <- NewFileAnalyzerResult(false, path, err)
@@ -162,12 +148,12 @@ func (w *FileAnalyzerWorker) CheckFile(path string, timeout time.Duration) {
 
 	go func() {
 		// TODO: try multiple times to avoid misdetection when decode failure occured
-		if _, err := gpsDev.ReadSentence(timeout); err != nil {
+		if _, err := gpsDev.ReadSentenceWithContext(ctx); err != nil {
 			w.Analyzed <- NewFileAnalyzerResult(false, path, err)
 			return
 		}
 
-		log.Println("DetectGPSDeviceWorker found", path)
+		// log.Println("DetectGPSDeviceWorker found", path)
 		w.Analyzed <- NewFileAnalyzerResult(true, path, nil)
 		return
 	}()
