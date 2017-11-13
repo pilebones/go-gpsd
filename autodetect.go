@@ -23,14 +23,11 @@ func getGPSMatcher() netlink.Matcher {
 
 // Autodetect try to detect new or existing plugged GPS device
 // This function should be run as root to have right privilege
-func Autodetect(timeout time.Duration) (*string, error) {
+func Autodetect(ctx context.Context) (*string, error) {
+	startTime := time.Now()
 	pathQueue, errQueue := make(chan string), make(chan error)
 	matcher := getGPSMatcher()
 	worker := NewFileAnalyzerWorker()
-
-	// Initialize context to stop goroutines when timeout or found device
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	go lookupExistingDevices(matcher, pathQueue, errQueue, ctx)
 	go monitorDevices(matcher, pathQueue, errQueue, ctx)
@@ -50,7 +47,7 @@ func Autodetect(timeout time.Duration) (*string, error) {
 		case path := <-pathQueue:
 			worker.CheckFile(path, ctx)
 		case <-ctx.Done():
-			return nil, fmt.Errorf("Reach timeout %s", timeout.String())
+			return nil, fmt.Errorf("Reach timeout after %s", time.Now().Sub(startTime).String())
 		}
 	}
 }
@@ -104,59 +101,4 @@ func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue cha
 			loop = false
 		}
 	}
-}
-
-type FileAnalyzerResult struct {
-	Found bool
-	Error error
-	Path  string
-}
-
-func NewFileAnalyzerResult(found bool, path string, err error) FileAnalyzerResult {
-	return FileAnalyzerResult{
-		Found: found,
-		Path:  path,
-		Error: err,
-	}
-}
-
-// FileAnalyzerWorker is a worker to analyze a file to
-// detect if the content match NMEA protocol
-type FileAnalyzerWorker struct {
-	Analyzed chan FileAnalyzerResult
-}
-
-func NewFileAnalyzerWorker() FileAnalyzerWorker {
-	return FileAnalyzerWorker{
-		Analyzed: make(chan FileAnalyzerResult),
-	}
-}
-
-func (w *FileAnalyzerWorker) CheckFile(path string, ctx context.Context) {
-	// log.Println("DetectGPSDeviceWorker check", path)
-
-	if err := IsCharDevice(path); err != nil {
-		w.Analyzed <- NewFileAnalyzerResult(false, path, err)
-		return
-	}
-
-	gpsDev, err := NewGPSDevice(path)
-	if err != nil {
-		w.Analyzed <- NewFileAnalyzerResult(false, path, err)
-		return
-	}
-
-	go func() {
-		// TODO: try multiple times to avoid misdetection when decode failure occured
-		if _, err := gpsDev.ReadSentenceWithContext(ctx); err != nil {
-			w.Analyzed <- NewFileAnalyzerResult(false, path, err)
-			return
-		}
-
-		// log.Println("DetectGPSDeviceWorker found", path)
-		w.Analyzed <- NewFileAnalyzerResult(true, path, nil)
-		return
-	}()
-
-	return
 }

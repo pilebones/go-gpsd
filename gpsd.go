@@ -14,7 +14,7 @@ import (
 
 const (
 	TIMEOUT            = time.Second * 5
-	AUTODETECT_TIMEOUT = time.Second * 10
+	AUTODETECT_TIMEOUT = time.Second * 5
 )
 
 var (
@@ -36,7 +36,13 @@ func main() {
 	var err error
 
 	if *autoDetectMode {
-		if charDevicePath, err = Autodetect(*autoDetectTimeout); err != nil {
+		// Initialize context to stop goroutines when timeout or found device
+		ctx, cancel := context.WithTimeout(context.Background(), *autoDetectTimeout)
+		defer cancel()
+
+		log.Println("Start autodetecting GPS devices.")
+		// run job to autodetect GPS device
+		if charDevicePath, err = Autodetect(ctx); err != nil {
 			log.Fatalln("Unable to autodetect GPS device, err:", err.Error())
 		}
 
@@ -44,11 +50,13 @@ func main() {
 			log.Fatalln("Unable to autodetect GPS device in", autoDetectTimeout.String())
 		}
 
-		log.Println("Autodetect", *charDevicePath, "char device, it could be gps serial port.")
+		log.Println("Autodetect", *charDevicePath, " as a GPS device.")
 	} else {
+		// Initialize context to stop goroutines when timeout or read a valid GPS sentence
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 
+		// Initialize and run worker
 		worker := NewFileAnalyzerWorker()
 		worker.CheckFile(*charDevicePath, ctx)
 
@@ -72,8 +80,11 @@ func main() {
 	}
 
 	// Begin to read GPS informations and parse them
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
 	queue, errors := make(chan nmea.NMEA), make(chan error)
-	quit := gpsDev.Monitor(queue, errors, *timeout)
+	quit := gpsDev.Monitor(queue, errors, ctx)
 
 	// Signal handler to quit properly monitor mode
 	signals := make(chan os.Signal, 1)
@@ -81,7 +92,7 @@ func main() {
 	go func() {
 		<-signals
 		log.Println("Exiting...")
-		quit <- true
+		quit <- struct{}{}
 		os.Exit(0)
 	}()
 

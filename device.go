@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	nmea "github.com/pilebones/go-nmea"
 )
@@ -44,8 +43,8 @@ func NewGPSDevice(absPath string) (*GPSDevice, error) {
 	return &GPSDevice{f}, nil
 }
 
-func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout time.Duration) chan bool {
-	quit := make(chan bool, 1)
+func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context.Context) chan struct{} {
+	quit := make(chan struct{}, 1)
 	go func() {
 		loop := true
 		for loop {
@@ -54,10 +53,10 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout tim
 				loop = false
 				break
 			default:
-				sentence, err := d.ReadSentence(timeout)
+				sentence, err := d.ReadSentence(ctx)
 				if err != nil {
 					errors <- fmt.Errorf("Unable to read sentence, err: %s", err.Error())
-					<-quit // Fatal error
+					quit <- struct{}{} // Fatal error
 				}
 
 				msg, err := nmea.Parse(sentence)
@@ -76,35 +75,7 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout tim
 	return quit
 }
 
-func (d *GPSDevice) ReadSentence(timeout time.Duration) (string, error) {
-	buf := make([]byte, os.Getpagesize())
-	sentence := make([]byte, 0)
-	for {
-		select {
-		case <-time.After(timeout):
-			return string(sentence), fmt.Errorf("timeout")
-		default:
-			count, err := d.Read(buf)
-			if err != nil {
-				return "", err
-			}
-
-			// log.Printf("Read %d bytes: %q (since: %s)\n", count, buf[:count], time.Since(now))
-			if count == 0 || bytes.Equal(buf[:count], []byte("\n")) {
-				// log.Printf("Read complete GPS message: %q (since: %s)\n", msg, time.Since(now))
-				return string(sentence), nil
-			}
-
-			sentence = append(sentence, buf[:count]...)
-
-			if len(sentence) > THRESHOLD {
-				return "", fmt.Errorf("Message too long to be a GPS sentence")
-			}
-		}
-	}
-}
-
-func (d *GPSDevice) ReadSentenceWithContext(ctx context.Context) (string, error) {
+func (d *GPSDevice) ReadSentence(ctx context.Context) (string, error) {
 	buf := make([]byte, os.Getpagesize())
 	sentence := make([]byte, 0)
 	for {
@@ -117,7 +88,9 @@ func (d *GPSDevice) ReadSentenceWithContext(ctx context.Context) (string, error)
 				return "", err
 			}
 
+			// log.Printf("Read %d bytes: %q (since: %s)\n", count, buf[:count], time.Since(now))
 			if count == 0 || bytes.Equal(buf[:count], []byte("\n")) {
+				// log.Printf("Read complete GPS message: %q (since: %s)\n", msg, time.Since(now))
 				return string(sentence), nil
 			}
 
