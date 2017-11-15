@@ -1,6 +1,9 @@
 package main
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // FileAnalyzerWorker is a worker to analyze a file to
 // detect if the content match NMEA protocol
@@ -30,6 +33,11 @@ func NewFileAnalyzerResult(found bool, path string, err error) FileAnalyzerResul
 
 func (w *FileAnalyzerWorker) CheckFile(path string, ctx context.Context) {
 	// log.Println("DetectGPSDeviceWorker check", path)
+
+	if path == "" {
+		w.Analyzed <- NewFileAnalyzerResult(false, path, fmt.Errorf("empty path"))
+		return
+	}
 
 	if err := IsCharDevice(path); err != nil {
 		w.Analyzed <- NewFileAnalyzerResult(false, path, err)

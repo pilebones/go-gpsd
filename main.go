@@ -56,6 +56,8 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 
+		log.Println("Analyzing", *charDevicePath, "...")
+
 		// Initialize and run worker
 		worker := NewFileAnalyzerWorker()
 		worker.CheckFile(*charDevicePath, ctx)

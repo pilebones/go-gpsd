@@ -13,6 +13,7 @@ const (
 	THRESHOLD = 2048 // To precise
 )
 
+// IsCharDevice return true if device exists and if is it a char device
 func IsCharDevice(path string) (err error) {
 	var fi os.FileInfo
 	if fi, err = os.Stat(path); err != nil {
@@ -35,6 +36,7 @@ type GPSDevice struct {
 	*os.File
 }
 
+// NewGPSDevice create an instance of GPSDevice from path
 func NewGPSDevice(absPath string) (*GPSDevice, error) {
 	f, err := os.Open(absPath)
 	if err != nil {
@@ -43,6 +45,7 @@ func NewGPSDevice(absPath string) (*GPSDevice, error) {
 	return &GPSDevice{f}, nil
 }
 
+// Monitor run daemon to watch device and append to chan read messages
 func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context.Context) chan struct{} {
 	quit := make(chan struct{}, 1)
 	go func() {
@@ -75,6 +78,7 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context
 	return quit
 }
 
+// ReadSentence read a single NMEA message from device
 func (d *GPSDevice) ReadSentence(ctx context.Context) (string, error) {
 	buf := make([]byte, os.Getpagesize())
 	sentence := make([]byte, 0)
@@ -88,9 +92,9 @@ func (d *GPSDevice) ReadSentence(ctx context.Context) (string, error) {
 				return "", err
 			}
 
-			// log.Printf("Read %d bytes: %q (since: %s)\n", count, buf[:count], time.Since(now))
+			// log.Printf("Read %d bytes: %q\n", count, buf[:count])
 			if count == 0 || bytes.Equal(buf[:count], []byte("\n")) {
-				// log.Printf("Read complete GPS message: %q (since: %s)\n", msg, time.Since(now))
+				// log.Printf("Read complete GPS message: %q\n", sentence)
 				return string(sentence), nil
 			}
 
