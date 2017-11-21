@@ -102,7 +102,7 @@ func main() {
 			select {
 			case msg := <-queue:
 				log.Printf("Handle NMEA message: %s", msg.Serialize())
-				ProcessMessage(msg)
+				processMessage(msg)
 				// log.Println(state.String())
 			case err := <-errors:
 				log.Println(err)
@@ -111,6 +111,7 @@ func main() {
 	}()
 
 	s := &http.Server{Addr: *listenAddr}
+	router()
 	log.Println("Listening on", *listenAddr)
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)

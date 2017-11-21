@@ -10,6 +10,7 @@ import (
 	"github.com/pilebones/go-udev/netlink"
 )
 
+// getGPSMatcher return default matcher to select GPS device
 func getGPSMatcher() netlink.Matcher {
 	action := netlink.ADD.String()
 	return &netlink.RuleDefinition{

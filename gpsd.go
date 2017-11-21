@@ -12,6 +12,29 @@ var (
 	state GPSData
 )
 
+// processMessage handle NMEA message and enrich GPS state data
+func processMessage(msg nmea.NMEA) GPSData {
+
+	// Update first
+	state.LastUpdate = time.Now()
+
+	switch msg.(type) {
+	case nmea.GPGGA:
+		gpgga := msg.(nmea.GPGGA)
+		state.Latitude, state.Longitude = &gpgga.Latitude, &gpgga.Longitude
+	case nmea.GPGLL:
+	case nmea.GPGSA:
+	case nmea.GPGSV:
+	case nmea.GPRMC:
+	case nmea.GPTXT:
+		if as := msg.(nmea.GPTXT).AntennaStatus(); as != nil {
+			state.AntennaStatus = as
+		}
+	case nmea.GPVTG:
+	}
+	return state
+}
+
 type GPSData struct {
 	LastUpdate time.Time `json:"last_update"`
 
@@ -85,19 +108,4 @@ func (d GPSData) String() string {
 	}
 
 	return strings.TrimSpace(rv)
-}
-
-// func processMessage(msg nmea.NMEA) {
-func ProcessMessage(msg nmea.NMEA) GPSData {
-
-	// Update first
-	state.LastUpdate = time.Now()
-
-	switch msg.(type) {
-	case nmea.GPTXT:
-		if as := msg.(nmea.GPTXT).AntennaStatus(); as != nil {
-			state.AntennaStatus = as
-		}
-	}
-	return state
 }

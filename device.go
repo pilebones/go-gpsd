@@ -129,5 +129,4 @@ func (d *GPSDevice) ReadSentence(ctx context.Context) (sentence string, err erro
 	}
 
 	return
-
 }
