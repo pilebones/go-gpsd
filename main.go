@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,10 +16,11 @@ import (
 const (
 	TIMEOUT            = time.Second * 5
 	AUTODETECT_TIMEOUT = time.Second * 5
+	LISTEN_ADDR        = "127.0.0.1:1234"
 )
 
 var (
-	charDevicePath             *string
+	charDevicePath, listenAddr *string
 	autoDetectMode             *bool
 	autoDetectTimeout, timeout *time.Duration
 )
@@ -27,7 +29,8 @@ func init() {
 	charDevicePath = flag.String("input", "/dev/ttyUSB0", "Char device path related to the serial port of the GPS device")
 	autoDetectMode = flag.Bool("autodetect", false, "Allow to enable auto-detection of the GPS device (already plugged or hot-plugged)")
 	timeout = flag.Duration("timeout", TIMEOUT, "Max duration allowed to read and parse a GPS sentence from serial-port")
-	autoDetectTimeout = flag.Duration("autodetect-timeout", AUTODETECT_TIMEOUT, "Time spent to try to autodetect the GPS device (exit 2 if fail)")
+	autoDetectTimeout = flag.Duration("autodetect-timeout", AUTODETECT_TIMEOUT, "Time spent to try to autodetect the GPS device")
+	listenAddr = flag.String("listen", LISTEN_ADDR, "Listen address for HTTP daemon")
 }
 
 func main() {
@@ -94,12 +97,22 @@ func main() {
 		os.Exit(0)
 	}()
 
-	for {
-		select {
-		case msg := <-queue:
-			log.Printf("Handle NMEA message: %s", msg.Serialize())
-		case err := <-errors:
-			log.Println(err)
+	go func() {
+		for {
+			select {
+			case msg := <-queue:
+				log.Printf("Handle NMEA message: %s", msg.Serialize())
+				ProcessMessage(msg)
+				// log.Println(state.String())
+			case err := <-errors:
+				log.Println(err)
+			}
 		}
+	}()
+
+	s := &http.Server{Addr: *listenAddr}
+	log.Println("Listening on", *listenAddr)
+	if err := s.ListenAndServe(); err != nil {
+		log.Fatal(err)
 	}
 }
