@@ -81,12 +81,8 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	// Begin to read GPS informations and parse them
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-	defer cancel()
-
 	queue, errors := make(chan nmea.NMEA), make(chan error)
-	quit := gpsDev.Monitor(queue, errors, ctx)
+	quit := gpsDev.Monitor(queue, errors, *timeout)
 
 	// Signal handler to quit properly monitor mode
 	signals := make(chan os.Signal, 1)

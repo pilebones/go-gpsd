@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	nmea "github.com/pilebones/go-nmea"
 )
 
 const (
-	THRESHOLD = 2048 // To precise
+	THRESHOLD = 256 // To precise
 )
 
 // IsCharDevice return true if device exists and if is it a char device
@@ -46,7 +48,7 @@ func NewGPSDevice(absPath string) (*GPSDevice, error) {
 }
 
 // Monitor run daemon to watch device and append to chan read messages
-func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context.Context) chan struct{} {
+func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout time.Duration) chan struct{} {
 	quit := make(chan struct{}, 1)
 	go func() {
 		loop := true
@@ -56,6 +58,10 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context
 				loop = false
 				break
 			default:
+				// Begin to read GPS informations and parse them
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				defer cancel()
+
 				sentence, err := d.ReadSentence(ctx)
 				if err != nil {
 					errors <- fmt.Errorf("Unable to read sentence, err: %s", err.Error())
@@ -79,30 +85,49 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, ctx context
 }
 
 // ReadSentence read a single NMEA message from device
-func (d *GPSDevice) ReadSentence(ctx context.Context) (string, error) {
-	buf := make([]byte, os.Getpagesize())
-	sentence := make([]byte, 0)
-	for {
+func (d *GPSDevice) ReadSentence(ctx context.Context) (sentence string, err error) {
+
+	i := 0
+	found := false
+	scanner := bufio.NewScanner(d)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return string(sentence), fmt.Errorf("timeout")
+			return "", fmt.Errorf("timeout")
 		default:
-			count, err := d.Read(buf)
-			if err != nil {
-				return "", err
+			i += 1
+			line := scanner.Bytes()
+
+			if err = scanner.Err(); err != nil {
+				return
 			}
 
-			// log.Printf("Read %d bytes: %q\n", count, buf[:count])
-			if count == 0 || bytes.Equal(buf[:count], []byte("\n")) {
+			// Drop this part if it's not expected magic-code or if first part is end of message
+			if !found && (!bytes.HasPrefix(bytes.TrimSpace(line), []byte{'$'}) ||
+				bytes.Equal(line, []byte{'\r', '\n'})) {
+				// fmt.Println("drop part", string(line))
+				continue
+			}
+
+			if len(line) == 0 || bytes.Equal(line, []byte{'\r', '\n'}) {
 				// log.Printf("Read complete GPS message: %q\n", sentence)
-				return string(sentence), nil
+				return
 			}
 
-			sentence = append(sentence, buf[:count]...)
+			found = true
+			sentence += string(bytes.TrimSpace(line))
+
+			if sentence[len(sentence)-3] == '*' {
+				// fmt.Println("end of msg by *")
+				return
+			}
 
 			if len(sentence) > THRESHOLD {
-				return "", fmt.Errorf("Message too long to be a GPS sentence")
+				return sentence, fmt.Errorf("Message too long to be a GPS sentence")
 			}
 		}
 	}
+
+	return
+
 }
