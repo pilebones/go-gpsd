@@ -101,6 +101,9 @@ func main() {
 		for {
 			select {
 			case msg := <-queue:
+				if msg == nil {
+					continue
+				}
 				log.Printf("Handle NMEA message: %s", msg.Serialize())
 				processMessage(msg)
 				// log.Println(state.String())

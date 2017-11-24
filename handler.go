@@ -12,7 +12,7 @@ func router() {
 
 // GPSHandler http handler to provide GPS data
 func GPSHandler(resp http.ResponseWriter, req *http.Request) {
-	data, err := json.Marshal(&state)
+	data, err := json.Marshal(state)
 	if err != nil {
 		log.Println("Unable to serialize response data, err:", err.Error())
 		resp.WriteHeader(http.StatusInternalServerError)

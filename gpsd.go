@@ -13,26 +13,40 @@ var (
 )
 
 // processMessage handle NMEA message and enrich GPS state data
-func processMessage(msg nmea.NMEA) GPSData {
+func processMessage(msg nmea.NMEA) {
+
+	if msg == nil {
+		return
+	}
 
 	// Update first
 	state.LastUpdate = time.Now()
 
 	switch msg.(type) {
-	case nmea.GPGGA:
-		gpgga := msg.(nmea.GPGGA)
+	case *nmea.GPGGA:
+		gpgga := msg.(*nmea.GPGGA)
 		state.Latitude, state.Longitude = &gpgga.Latitude, &gpgga.Longitude
-	case nmea.GPGLL:
-	case nmea.GPGSA:
-	case nmea.GPGSV:
-	case nmea.GPRMC:
-	case nmea.GPTXT:
-		if as := msg.(nmea.GPTXT).AntennaStatus(); as != nil {
-			state.AntennaStatus = as
-		}
-	case nmea.GPVTG:
+	case *nmea.GPGLL:
+		gpgll := msg.(*nmea.GPGLL)
+		state.Latitude, state.Longitude = &gpgll.Latitude, &gpgll.Longitude
+	case *nmea.GPGSA:
+		gpgsa := msg.(*nmea.GPGSA)
+		status := gpgsa.FixStatus.String()
+		state.Status = &status
+	case *nmea.GPGSV:
+		gpgsv := msg.(*nmea.GPGSV)
+		state.NbSatellite = &(gpgsv.SatellitesInView)
+	case *nmea.GPRMC:
+		gprmc := msg.(*nmea.GPRMC)
+		state.Speed = &gprmc.Speed
+		state.Latitude, state.Longitude = &gprmc.Latitude, &gprmc.Longitude
+	case *nmea.GPTXT:
+		gptxt := msg.(*nmea.GPTXT)
+		state.AntennaStatus = gptxt.AntennaStatus()
+	case *nmea.GPVTG:
+		gpvtg := msg.(*nmea.GPVTG)
+		state.Speed = &gpvtg.SpeedKmh
 	}
-	return state
 }
 
 type GPSData struct {
@@ -40,13 +54,15 @@ type GPSData struct {
 
 	AntennaStatus *string `json:"ant_status"`
 
-	Status *nmea.FixStatus `json:"status"`
+	Status *string `json:"status"`
 
 	Latitude  *nmea.LatLong `json:"latitude"`
 	Longitude *nmea.LatLong `json:"longitude"`
-	Altitude  *uint         `json:"altitude"` // ft
-	Speed     *uint         `json:"speed"`    // mph
-	Climb     *uint         `json:"climb"`    // ft/min
+	Altitude  *float64      `json:"altitude"` // ft
+	Speed     *float64      `json:"speed"`    // mph
+	Climb     *float64      `json:"climb"`    // ft/min
+
+	NbSatellite *int `json:"nb_satellite"`
 
 	LatitudeAccuracyErr  *uint `json:"latitude_accuracy_err"`
 	LongitudeAccuracyErr *uint `json:"longitude_accuracy_err"`
@@ -64,7 +80,7 @@ func (d GPSData) String() string {
 	}
 
 	if d.Status != nil {
-		rv += fmt.Sprintf("Status: %s\n", d.Status.String())
+		rv += fmt.Sprintf("Status: %s\n", *d.Status)
 	}
 
 	if d.Latitude != nil {
