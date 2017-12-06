@@ -16,8 +16,8 @@ func getGPSMatcher() netlink.Matcher {
 	return &netlink.RuleDefinition{
 		Action: &action,
 		Env: map[string]string{
-			// "SUBSYSTEM": "tty",
-			"DEVNAME": "ttyUSB\\d+",
+			"SUBSYSTEM": "tty",
+			"DEVNAME":   "ttyUSB\\d+",
 		},
 	}
 }
