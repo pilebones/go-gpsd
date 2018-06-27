@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"time"
 
 	"github.com/pilebones/go-udev/crawler"
@@ -12,7 +13,7 @@ import (
 
 // getGPSMatcher return default matcher to select GPS device
 func getGPSMatcher() netlink.Matcher {
-	action := netlink.ADD.String()
+	action := regexp.QuoteMeta(netlink.ADD.String())
 	return &netlink.RuleDefinition{
 		Action: &action,
 		Env: map[string]string{
@@ -67,7 +68,11 @@ func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQu
 		select {
 		case <-ctx.Done():
 			loop = false
-		case device := <-queue:
+		case device, more := <-queue:
+			if !more {
+				loop = false
+			}
+
 			if name, exists := device.Env["DEVNAME"]; exists {
 				pathQueue <- fmt.Sprintf("/dev/%s", name)
 			}
