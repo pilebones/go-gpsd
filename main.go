@@ -91,14 +91,20 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
-		<-signals
-		log.Println("Exiting...")
-		quit <- struct{}{}
-		os.Exit(0)
+		select {
+		case <-signals:
+			log.Println("Exiting...")
+			quit <- struct{}{}
+			os.Exit(0)
+		case <-quit:
+			log.Println("Exiting...")
+			os.Exit(0)
+		}
 	}()
 
 	go func() {
-		for {
+		loopMonitor := true
+		for loopMonitor {
 			select {
 			case msg := <-queue:
 				if msg == nil {
@@ -109,6 +115,11 @@ func main() {
 				// log.Println(state.String())
 			case err := <-errors:
 				log.Println(err)
+				if !gpsDev.StillExists() {
+					log.Println("GPS Device deconnected")
+					loopMonitor = false
+					quit <- struct{}{}
+				}
 			}
 		}
 	}()

@@ -47,6 +47,11 @@ func NewGPSDevice(absPath string) (*GPSDevice, error) {
 	return &GPSDevice{f}, nil
 }
 
+func (d *GPSDevice) StillExists() bool {
+	_, err := d.Stat()
+	return os.IsNotExist(err)
+}
+
 // Monitor run daemon to watch device and append to chan read messages
 func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout time.Duration) chan struct{} {
 	quit := make(chan struct{}, 1)
@@ -66,6 +71,11 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout tim
 				if err != nil {
 					errors <- fmt.Errorf("Unable to read sentence, err: %s", err.Error())
 					quit <- struct{}{} // Fatal error
+					continue
+				}
+				if sentence == "" {
+					errors <- fmt.Errorf("No mode sentence")
+					continue
 				}
 
 				msg, err := nmea.Parse(sentence)
