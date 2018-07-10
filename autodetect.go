@@ -11,11 +11,18 @@ import (
 	"github.com/pilebones/go-udev/netlink"
 )
 
-// getGPSMatcher return default matcher to select GPS device
-func getGPSMatcher() netlink.Matcher {
-	action := regexp.QuoteMeta(netlink.ADD.String())
+var conn *netlink.UEventConn
+
+func init() {
+	conn = new(netlink.UEventConn)
+	if err := conn.Connect(netlink.UdevEvent); err != nil {
+		log.Fatalln("Unable to connect to kernel netlink socket, err: %s", err.Error())
+	}
+}
+
+// Default GPS device matcher used by go-udev
+func getGPSMatcher() *netlink.RuleDefinition {
 	return &netlink.RuleDefinition{
-		Action: &action,
 		Env: map[string]string{
 			"SUBSYSTEM": "tty",
 			"DEVNAME":   "ttyUSB\\d+",
@@ -23,16 +30,23 @@ func getGPSMatcher() netlink.Matcher {
 	}
 }
 
+// getGPSMatcherByAction allocate a GPS matcher with specified action
+func getGPSMatcherByAction(a netlink.KObjAction) netlink.Matcher {
+	matcher := getGPSMatcher()
+	action := regexp.QuoteMeta(a.String())
+	matcher.Action = &action
+	return matcher
+}
+
 // Autodetect try to detect new or existing plugged GPS device
 // This function should be run as root to have right privilege
 func Autodetect(ctx context.Context) (*string, error) {
 	startTime := time.Now()
 	pathQueue, errQueue := make(chan string), make(chan error)
-	matcher := getGPSMatcher()
 	worker := NewFileAnalyzerWorker()
 
-	go lookupExistingDevices(matcher, pathQueue, errQueue, ctx)
-	go monitorDevices(matcher, pathQueue, errQueue, ctx)
+	go lookupExistingDevices(getGPSMatcher(), pathQueue, errQueue, ctx)
+	go monitorDevices(getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue, ctx)
 
 	for {
 		select {
@@ -82,13 +96,6 @@ func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQu
 
 // monitorDevices listen UEvent kernel socket and try to match rules from matcher with handled uevent
 func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
-	conn := new(netlink.UEventConn)
-
-	if err := conn.Connect(netlink.UdevEvent); err != nil {
-		errQueue <- fmt.Errorf("Unable to connect to kernel netlink socket, err: %s", err.Error())
-		return
-	}
-
 	queue := make(chan netlink.UEvent)
 	quit := conn.Monitor(queue, errQueue, matcher)
 	loop := true
@@ -98,13 +105,24 @@ func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue cha
 		conn.Close()
 	}()
 
+	fn := func(uevent netlink.UEvent) {
+		log.Println("Handle uevent:", uevent.String())
+		pathQueue <- fmt.Sprintf("/dev/%s", uevent.Env["DEVNAME"])
+	}
+
 	for loop {
-		select {
-		case uevent := <-queue:
-			log.Println("Handle uevent:", uevent.String())
-			pathQueue <- fmt.Sprintf("/dev/%s", uevent.Env["DEVNAME"])
-		case <-ctx.Done():
-			loop = false
+		if ctx == nil {
+			select {
+			case uevent := <-queue:
+				fn(uevent)
+			}
+		} else {
+			select {
+			case uevent := <-queue:
+				fn(uevent)
+			case <-ctx.Done():
+				loop = false
+			}
 		}
 	}
 }
