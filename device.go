@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
 	nmea "github.com/pilebones/go-nmea"
+	"github.com/pilebones/go-udev/netlink"
 )
 
 const (
@@ -52,13 +54,44 @@ func (d *GPSDevice) StillExists() bool {
 	return os.IsNotExist(err)
 }
 
+// Autodetect try to detect new or existing plugged GPS device
+// This function should be run as root to have right privilege
+func (d *GPSDevice) OnUnplugged(deconnected chan struct{}) error {
+	pathQueue, errQueue := make(chan string), make(chan error)
+
+	go monitorDevices(getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue, nil)
+	for {
+		select {
+		case err := <-errQueue:
+			log.Println("Error:", err)
+			return err
+		case path := <-pathQueue:
+			if path == d.Name() {
+				log.Println("Deconnected device detected:", path)
+				deconnected <- struct{}{}
+			} else {
+				log.Println("Not attempted deconnected device, got:", path, d.Name())
+			}
+			return nil
+		}
+	}
+}
+
 // Monitor run daemon to watch device and append to chan read messages
 func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout time.Duration) chan struct{} {
+	deconnected := make(chan struct{})
+
+	go d.OnUnplugged(deconnected)
+
 	quit := make(chan struct{}, 1)
 	go func() {
 		loop := true
 		for loop {
 			select {
+			case <-deconnected:
+				errors <- fmt.Errorf("Device %s deconnected", d.Name())
+				loop = false
+				break
 			case <-quit:
 				loop = false
 				break
@@ -75,6 +108,7 @@ func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout tim
 				}
 				if sentence == "" {
 					errors <- fmt.Errorf("No mode sentence")
+					// quit <- struct{}{} // Fatal error
 					continue
 				}
 

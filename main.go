@@ -115,11 +115,11 @@ func main() {
 				// log.Println(state.String())
 			case err := <-errors:
 				log.Println(err)
-				if !gpsDev.StillExists() {
+				/*if !gpsDev.StillExists() {
 					log.Println("GPS Device deconnected")
 					loopMonitor = false
 					quit <- struct{}{}
-				}
+				}*/
 			}
 		}
 	}()
