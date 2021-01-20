@@ -84,7 +84,7 @@ func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQu
 func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
 	conn := new(netlink.UEventConn)
 
-	if err := conn.Connect(); err != nil {
+	if err := conn.Connect(netlink.UdevEvent); err != nil {
 		errQueue <- fmt.Errorf("Unable to connect to kernel netlink socket, err: %s", err.Error())
 		return
 	}
