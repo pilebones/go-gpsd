@@ -36,8 +36,11 @@ func main() {
 
 	log.Println("Selecting device", conf.GPSCharDevPath)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	onUnplugged := make(chan struct{}, 1)
-	go NotifyIfDeviceUnplugged(conf.GPSCharDevPath, onUnplugged)
+	go NotifyIfDeviceUnplugged(ctx, conf.GPSCharDevPath, onUnplugged)
 
 	// Try to open file or fatal
 	gps, err := NewGPSDevice(conf.GPSCharDevPath, conf.GPSReaderTimeout)
@@ -50,9 +53,6 @@ func main() {
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
 	// Monitor GPS device to gather NMEA sentences
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	queue, errors := make(chan nmea.NMEA), make(chan error)
 	go gps.Monitor(ctx, queue, errors)
 

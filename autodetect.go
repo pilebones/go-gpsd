@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/pilebones/go-udev/crawler"
 	"github.com/pilebones/go-udev/netlink"
@@ -66,15 +67,29 @@ func Autodetect(conf *Config) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), conf.AutodetectTimeout)
 	defer cancel()
 
+	var wg sync.WaitGroup
+
 	pathQueue := make(chan string) // filepaths matched by the matcher rules
 	errQueue := make(chan error)   // errors occured during lookup and monitoring
-	go lookupExistingDevices(ctx, getGPSMatcher(), pathQueue, errQueue)
-	go monitorDevices(ctx, getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue)
+	wg.Add(1)
+	go lookupExistingDevices(ctx, &wg, getGPSMatcher(), pathQueue, errQueue)
+	wg.Add(1)
+	go monitorDevices(ctx, &wg, getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue)
+	/*if err := monitorDevices(ctx, getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue); err != nil {
+		return "", err
+	}*/
 
 	// Start worker to analyze auto-detected char devices
 	// to verify if we can gather NMEA sentences
 	worker := NewCharDevAnalyzerWorker()
-	worker.Start(conf.GPSReaderTimeout)
+	quit := worker.Start(conf.GPSReaderTimeout)
+
+	defer func() {
+		close(quit) // Stop worker
+		cancel()    // stop jobs (lookup and monitor)
+		wg.Wait()   // wait routines to stop property
+		log.Println("GPS autodetection terminated.")
+	}()
 
 	for {
 		select {
@@ -92,51 +107,60 @@ func Autodetect(conf *Config) (string, error) {
 }
 
 // monitor if device unplugged notify when the device is unplugged
-func NotifyIfDeviceUnplugged(path string, onUnplugged chan struct{}) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func NotifyIfDeviceUnplugged(ctx context.Context, path string, onUnplugged chan struct{}) {
 
+	matcher := &netlink.RuleDefinition{
+		Env: map[string]string{
+			"SUBSYSTEM": "tty",
+			"DEVNAME":   regexp.QuoteMeta(path),
+		},
+	}
+	action := regexp.QuoteMeta(netlink.REMOVE.String())
+	matcher.Action = &action
+	log.Println(*matcher.Action, matcher.Env)
 	pathQueue := make(chan string) // filepaths matched by the matcher rules
 	errQueue := make(chan error)   // errors occured during lookup and monitoring
-	go monitorDevices(ctx, getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue)
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go monitorDevices(ctx, &wg, matcher, pathQueue, errQueue)
+
+loop:
 	for {
 		select {
+		case <-ctx.Done():
+			break loop
+		case e := <-errQueue:
+			log.Println("Error:", e)
 		case p := <-pathQueue:
 			if p != path {
-				log.Printf("Not attempted deconnected device (match: %s, expected: %s)", p, path)
-				continue
+				log.Printf("Another device has been deconnected (match: %s, expected: %s)", p, path)
+				continue loop
 			}
 
-			log.Println("Deconnected device detected:", p)
-			onUnplugged <- struct{}{}
-			return
-		case e := <-errQueue:
-			log.Fatalln(e)
+			log.Println("GPS device has been unplugged:", p)
+			close(onUnplugged)
+			break loop
 		}
 	}
+
+	wg.Wait() // wait routines to stop property
 }
 
 // lookupExistingDevices lookup inside /sys/devices uevent struct which match rules from matcher
-func lookupExistingDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
+func lookupExistingDevices(ctx context.Context, wg *sync.WaitGroup, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
+	defer wg.Done()
 	queue := make(chan crawler.Device)
 	stop := crawler.ExistingDevices(queue, errQueue, matcher)
-
-	defer func() {
-		stop <- struct{}{} // Close properly udev monitor
-	}()
+	defer close(stop)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case device, more := <-queue:
-			if !more {
-				return
-			}
-
+		case device := <-queue:
 			if devpath := getDevPathByEnv(device.Env); devpath != "" {
-				log.Println("Matcher permit to found a plugged device:", device.KObj)
+				// log.Println("Matcher permit to found a plugged device:", device.KObj)
 				pathQueue <- devpath
 			}
 		}
@@ -144,24 +168,21 @@ func lookupExistingDevices(ctx context.Context, matcher netlink.Matcher, pathQue
 }
 
 // monitorDevices listen UEvent kernel socket and try to match rules from matcher with handled uevent
-func monitorDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
+func monitorDevices(ctx context.Context, wg *sync.WaitGroup, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
+	defer wg.Done()
 	queue := make(chan netlink.UEvent)
 	quit := conn.Monitor(queue, errQueue, matcher)
-
-	defer func() {
-		quit <- struct{}{} // Close properly udev monitor
-		// conn.Close()
-	}()
+	defer close(quit)
 
 	for {
 		select {
-		case uevent := <-queue:
-			if devpath := getDevPathByEnv(uevent.Env); devpath != "" {
-				log.Println("Matcher handle uevent:", uevent.String())
-				pathQueue <- devpath
-			}
 		case <-ctx.Done():
 			return
+		case uevent := <-queue:
+			if devpath := getDevPathByEnv(uevent.Env); devpath != "" {
+				// log.Println("Matcher handle uevent:", uevent.String())
+				pathQueue <- devpath
+			}
 		}
 	}
 }
