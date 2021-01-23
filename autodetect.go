@@ -2,21 +2,27 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
+	"path/filepath"
 	"regexp"
-	"time"
+	"strings"
 
 	"github.com/pilebones/go-udev/crawler"
 	"github.com/pilebones/go-udev/netlink"
 )
 
-var conn *netlink.UEventConn
+var (
+	conn *netlink.UEventConn
+
+	// errors handling
+	ErrGPSDeviceAutodetectionTimeout = errors.New("reach timeout for GPS device autodetection")
+)
 
 func init() {
 	conn = new(netlink.UEventConn)
 	if err := conn.Connect(netlink.UdevEvent); err != nil {
-		log.Fatalln("Unable to connect to kernel netlink socket, err: %s", err.Error())
+		log.Fatalf("Unable to connect to kernel netlink socket, err: %v", err)
 	}
 }
 
@@ -38,91 +44,98 @@ func getGPSMatcherByAction(a netlink.KObjAction) netlink.Matcher {
 	return matcher
 }
 
-// Autodetect try to detect new or existing plugged GPS device
-// This function should be run as root to have right privilege
-func Autodetect(ctx context.Context) (*string, error) {
-	startTime := time.Now()
-	pathQueue, errQueue := make(chan string), make(chan error)
-	worker := NewFileAnalyzerWorker()
+func getDevPathByEnv(env map[string]string) string {
+	if name, exists := env["DEVNAME"]; exists {
+		if strings.HasPrefix(name, "/dev") {
+			return name
+		}
+		return filepath.Join("/dev", name)
+	}
+	return ""
+}
 
-	go lookupExistingDevices(getGPSMatcher(), pathQueue, errQueue, ctx)
-	go monitorDevices(getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue, ctx)
+// Autodetect try to detect a GPS devices in those already plugged or hot-plugged
+// NOTE: need elaveted privileges so this function may be run as root !
+func Autodetect(conf *Config) (string, error) {
+
+	// For performance reason, we do two searches in parallel in order to find a GPS type device.
+	// One for the devices already pluggued to the host and another one by monitoring the devices hot-plugging.
+	// Each goroutine will fill two channels (ie: pathQueue, errQueue) with data related to the matched devices by matcher.
+	// Then the path is passing to a worker to be analyzed to be sure it is a GPS device (by we can read some NMEA sentences).
+	// If some errors occured during the research or the analyze, the related channel is filled.
+	ctx, cancel := context.WithTimeout(context.Background(), conf.AutodetectTimeout)
+	defer cancel()
+
+	pathQueue := make(chan string) // filepaths matched by the matcher rules
+	errQueue := make(chan error)   // errors occured during lookup and monitoring
+	go lookupExistingDevices(ctx, getGPSMatcher(), pathQueue, errQueue)
+	go monitorDevices(ctx, getGPSMatcherByAction(netlink.ADD), pathQueue, errQueue)
+
+	// Start worker to analyze auto-detected char devices
+	// to verify if we can gather NMEA sentences
+	worker := NewCharDevAnalyzerWorker()
+	worker.Start(conf.GPSReaderTimeout)
 
 	for {
 		select {
-		case result := <-worker.Analyzed:
-			if result.Error != nil {
-				errQueue <- result.Error
-			}
-
-			if result.Found {
-				return &result.Path, nil
-			}
-		case err := <-errQueue:
-			return nil, err
-		case path := <-pathQueue:
-			worker.CheckFile(path, ctx)
 		case <-ctx.Done():
-			return nil, fmt.Errorf("Reach timeout after %s", time.Since(startTime).String())
+			return "", ErrGPSDeviceAutodetectionTimeout
+		case result := <-worker.ResultQueue:
+			return result.Path, result.Error
+		case err := <-errQueue:
+			return "", err
+		case path := <-pathQueue:
+			log.Println("Matcher rules permit to found a device at", path, "and should be analyzed.")
+			worker.Analyze(path)
 		}
 	}
 }
 
 // lookupExistingDevices lookup inside /sys/devices uevent struct which match rules from matcher
-func lookupExistingDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
+func lookupExistingDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
 	queue := make(chan crawler.Device)
-	loop := true
-	quit := crawler.ExistingDevices(queue, errQueue, matcher)
+	stop := crawler.ExistingDevices(queue, errQueue, matcher)
 
 	defer func() {
-		quit <- struct{}{} // Close properly udev monitor
+		stop <- struct{}{} // Close properly udev monitor
 	}()
 
-	for loop {
+	for {
 		select {
 		case <-ctx.Done():
-			loop = false
+			return
 		case device, more := <-queue:
 			if !more {
-				loop = false
+				return
 			}
 
-			if name, exists := device.Env["DEVNAME"]; exists {
-				pathQueue <- fmt.Sprintf("/dev/%s", name)
+			if devpath := getDevPathByEnv(device.Env); devpath != "" {
+				log.Println("Matcher permit to found a plugged device:", device.KObj)
+				pathQueue <- devpath
 			}
 		}
 	}
 }
 
 // monitorDevices listen UEvent kernel socket and try to match rules from matcher with handled uevent
-func monitorDevices(matcher netlink.Matcher, pathQueue chan string, errQueue chan error, ctx context.Context) {
+func monitorDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
 	queue := make(chan netlink.UEvent)
 	quit := conn.Monitor(queue, errQueue, matcher)
-	loop := true
 
 	defer func() {
 		quit <- struct{}{} // Close properly udev monitor
 		conn.Close()
 	}()
 
-	fn := func(uevent netlink.UEvent) {
-		log.Println("Handle uevent:", uevent.String())
-		pathQueue <- fmt.Sprintf("/dev/%s", uevent.Env["DEVNAME"])
-	}
-
-	for loop {
-		if ctx == nil {
-			select {
-			case uevent := <-queue:
-				fn(uevent)
+	for {
+		select {
+		case uevent := <-queue:
+			if devpath := getDevPathByEnv(uevent.Env); devpath != "" {
+				log.Println("Matcher handle uevent:", uevent.String())
+				pathQueue <- devpath
 			}
-		} else {
-			select {
-			case uevent := <-queue:
-				fn(uevent)
-			case <-ctx.Done():
-				loop = false
-			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }
