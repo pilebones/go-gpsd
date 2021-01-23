@@ -59,11 +59,10 @@ func (d *GPSDevice) StillExists() bool {
 func (d *GPSDevice) OnUnplugged(deconnected chan struct{}) error {
 	pathQueue, errQueue := make(chan string), make(chan error)
 
-	go monitorDevices(getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue, nil)
+	go monitorDevices(context.Background(), getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue)
 	for {
 		select {
 		case err := <-errQueue:
-			log.Println("Error:", err)
 			return err
 		case path := <-pathQueue:
 			if path == d.Name() {
