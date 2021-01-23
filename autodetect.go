@@ -31,7 +31,7 @@ func getGPSMatcher() *netlink.RuleDefinition {
 	return &netlink.RuleDefinition{
 		Env: map[string]string{
 			"SUBSYSTEM": "tty",
-			"DEVNAME":   "ttyUSB\\d+",
+			"DEVNAME":   `(/dev/)?ttyUSB\d+`,
 		},
 	}
 }
@@ -91,6 +91,32 @@ func Autodetect(conf *Config) (string, error) {
 	}
 }
 
+// monitor if device unplugged notify when the device is unplugged
+func NotifyIfDeviceUnplugged(path string, onUnplugged chan struct{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pathQueue := make(chan string) // filepaths matched by the matcher rules
+	errQueue := make(chan error)   // errors occured during lookup and monitoring
+	go monitorDevices(ctx, getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue)
+
+	for {
+		select {
+		case p := <-pathQueue:
+			if p != path {
+				log.Printf("Not attempted deconnected device (match: %s, expected: %s)", p, path)
+				continue
+			}
+
+			log.Println("Deconnected device detected:", p)
+			onUnplugged <- struct{}{}
+			return
+		case e := <-errQueue:
+			log.Fatalln(e)
+		}
+	}
+}
+
 // lookupExistingDevices lookup inside /sys/devices uevent struct which match rules from matcher
 func lookupExistingDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan string, errQueue chan error) {
 	queue := make(chan crawler.Device)
@@ -124,7 +150,7 @@ func monitorDevices(ctx context.Context, matcher netlink.Matcher, pathQueue chan
 
 	defer func() {
 		quit <- struct{}{} // Close properly udev monitor
-		conn.Close()
+		// conn.Close()
 	}()
 
 	for {
