@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"time"
 )
@@ -59,15 +58,12 @@ func checkFile(timeout time.Duration, path string) error {
 	}
 
 	var dev *GPSDevice
-	if dev, err = NewGPSDevice(path); err != nil {
+	if dev, err = NewGPSDevice(path, timeout); err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
 	// Now try to read at least one NMEA message from char device
 	// TODO: try multiple times to avoid misdetection when decode failure occurred
-	_, err = dev.ReadSentence(ctx)
+	_, err = dev.ReadSentence()
 	return err
 }

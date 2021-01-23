@@ -4,13 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	nmea "github.com/pilebones/go-nmea"
-	"github.com/pilebones/go-udev/netlink"
 )
 
 const (
@@ -24,12 +23,12 @@ func IsCharDevice(path string) (err error) {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("File %s doesn't exists", path)
 		}
-		return fmt.Errorf("Unable to use file %sas input, err: %s", path, err.Error())
+		return err
 	}
 
 	// Bitwises to validate right input file
 	if fi.Mode()&os.ModeCharDevice == 0 || fi.Mode()&os.ModeDevice == 0 {
-		return fmt.Errorf("Input file should be a char device file (got: %s, wanted: %s)\n",
+		return fmt.Errorf("Input file should be a char device file (got: %s, wanted: %s)",
 			fi.Mode(), os.FileMode(os.ModeCharDevice|os.ModeDevice).String())
 	}
 
@@ -38,15 +37,19 @@ func IsCharDevice(path string) (err error) {
 
 type GPSDevice struct {
 	*os.File
+	gpsReaderTimeout time.Duration
 }
 
 // NewGPSDevice create an instance of GPSDevice from path
-func NewGPSDevice(absPath string) (*GPSDevice, error) {
+func NewGPSDevice(absPath string, gpsReaderTimeout time.Duration) (*GPSDevice, error) {
 	f, err := os.Open(absPath)
 	if err != nil {
 		return nil, err
 	}
-	return &GPSDevice{f}, nil
+	return &GPSDevice{
+		File:             f,
+		gpsReaderTimeout: gpsReaderTimeout,
+	}, nil
 }
 
 func (d *GPSDevice) StillExists() bool {
@@ -54,81 +57,44 @@ func (d *GPSDevice) StillExists() bool {
 	return os.IsNotExist(err)
 }
 
-// Autodetect try to detect new or existing plugged GPS device
-// This function should be run as root to have right privilege
-func (d *GPSDevice) OnUnplugged(deconnected chan struct{}) error {
-	pathQueue, errQueue := make(chan string), make(chan error)
-
-	go monitorDevices(context.Background(), getGPSMatcherByAction(netlink.REMOVE), pathQueue, errQueue)
+// Monitor run daemon to watch device and append to chan read messages
+func (d *GPSDevice) Monitor(ctx context.Context, queue chan nmea.NMEA, errs chan error) {
 	for {
 		select {
-		case err := <-errQueue:
-			return err
-		case path := <-pathQueue:
-			if path == d.Name() {
-				log.Println("Deconnected device detected:", path)
-				deconnected <- struct{}{}
-			} else {
-				log.Println("Not attempted deconnected device, got:", path, d.Name())
+		case <-ctx.Done():
+			return
+		default:
+			// Begin to read GPS informations and parse them
+			sentence, err := d.ReadSentence()
+			if err != nil {
+				errs <- fmt.Errorf("Unable to read sentence, err: %w", err)
+				continue
 			}
-			return nil
+			if sentence == "" {
+				errs <- errors.New("Empty NMEA sentence")
+				time.Sleep(time.Second)
+				return
+			}
+
+			msg, err := nmea.Parse(sentence)
+			if err != nil {
+				errs <- fmt.Errorf("Wrong NMEA message format, err: %w", err)
+				continue
+			}
+			if msg == nil {
+				errs <- fmt.Errorf("Invalid NMEA message, got: %s", sentence)
+				continue
+			}
+			queue <- msg
 		}
 	}
 }
 
-// Monitor run daemon to watch device and append to chan read messages
-func (d *GPSDevice) Monitor(queue chan nmea.NMEA, errors chan error, timeout time.Duration) chan struct{} {
-	deconnected := make(chan struct{})
-
-	go d.OnUnplugged(deconnected)
-
-	quit := make(chan struct{}, 1)
-	go func() {
-		loop := true
-		for loop {
-			select {
-			case <-deconnected:
-				errors <- fmt.Errorf("Device %s deconnected", d.Name())
-				loop = false
-				break
-			case <-quit:
-				loop = false
-				break
-			default:
-				// Begin to read GPS informations and parse them
-				ctx, cancel := context.WithTimeout(context.Background(), timeout)
-				defer cancel()
-
-				sentence, err := d.ReadSentence(ctx)
-				if err != nil {
-					errors <- fmt.Errorf("Unable to read sentence, err: %s", err.Error())
-					quit <- struct{}{} // Fatal error
-					continue
-				}
-				if sentence == "" {
-					errors <- fmt.Errorf("No mode sentence")
-					// quit <- struct{}{} // Fatal error
-					continue
-				}
-
-				msg, err := nmea.Parse(sentence)
-				if err != nil {
-					errors <- fmt.Errorf("Wrong NMEA message format, err: %s", err.Error())
-					continue
-				}
-				if msg == nil {
-					errors <- fmt.Errorf("Invalid NMEA message, got: %s", sentence)
-					continue
-				}
-				queue <- msg
-			}
-		}
-	}()
-	return quit
-}
-
 // ReadSentence read a single NMEA message from device
-func (d *GPSDevice) ReadSentence(ctx context.Context) (sentence string, err error) {
+func (d *GPSDevice) ReadSentence() (sentence string, err error) {
+
+	ctx, cancel := context.WithTimeout(context.Background(), d.gpsReaderTimeout)
+	defer cancel()
 
 	i := 0
 	found := false
@@ -136,7 +102,7 @@ func (d *GPSDevice) ReadSentence(ctx context.Context) (sentence string, err erro
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("timeout")
+			return "", ctx.Err()
 		default:
 			i += 1
 			line := scanner.Bytes()
@@ -166,7 +132,7 @@ func (d *GPSDevice) ReadSentence(ctx context.Context) (sentence string, err erro
 			}
 
 			if len(sentence) > THRESHOLD {
-				return sentence, fmt.Errorf("Message too long to be a GPS sentence")
+				return sentence, errors.New("Message too long to be a GPS sentence")
 			}
 		}
 	}

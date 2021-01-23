@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
@@ -35,34 +36,38 @@ func main() {
 
 	log.Println("Selecting device", conf.GPSCharDevPath)
 
+	onUnplugged := make(chan struct{}, 1)
+	go NotifyIfDeviceUnplugged(conf.GPSCharDevPath, onUnplugged)
+
 	// Try to open file or fatal
-	gpsDev, err := NewGPSDevice(conf.GPSCharDevPath)
+	gps, err := NewGPSDevice(conf.GPSCharDevPath, conf.GPSReaderTimeout)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	queue, errors := make(chan nmea.NMEA), make(chan error)
-	quit := gpsDev.Monitor(queue, errors, conf.GPSReaderTimeout)
-
-	// Signal handler to quit properly monitor mode
+	// Signals handler to quit properly monitor mode
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		select {
-		case <-signals:
-			log.Println("Exiting...")
-			quit <- struct{}{}
-			os.Exit(0)
-		case <-quit:
-			log.Println("Exiting...")
-			os.Exit(0)
-		}
-	}()
 
+	// Monitor GPS device to gather NMEA sentences
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	queue, errors := make(chan nmea.NMEA), make(chan error)
+	go gps.Monitor(ctx, queue, errors)
+
+	// NMEA sentences handling
 	go func() {
-		loopMonitor := true
-		for loopMonitor {
+		for {
 			select {
+			case <-signals:
+				log.Println("Exiting...")
+				cancel() // close properly monitor mode
+				os.Exit(0)
+			case <-onUnplugged:
+				log.Println("GPS device has been unplugged, exiting...")
+				cancel() // close properly monitor mode
+				os.Exit(1)
 			case msg := <-queue:
 				if msg == nil {
 					continue
@@ -81,10 +86,12 @@ func main() {
 		}
 	}()
 
+	// Run web server to provided GPS informations over an api
 	s := &http.Server{Addr: conf.ListenAddr}
 	router()
 	log.Println("Listening on", conf.ListenAddr)
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+
 }
