@@ -25,6 +25,7 @@ func init() {
 	if err := conn.Connect(netlink.UdevEvent); err != nil {
 		log.Fatalf("Unable to connect to kernel netlink socket, err: %v", err)
 	}
+	conn.MatchedUEventLimit = 1
 }
 
 // Default GPS device matcher used by go-udev
