@@ -59,8 +59,5 @@ func (w *FileAnalyzerWorker) CheckFile(path string, ctx context.Context) {
 
 		// log.Println("DetectGPSDeviceWorker found", path)
 		w.Analyzed <- NewFileAnalyzerResult(true, path, nil)
-		return
 	}()
-
-	return
 }

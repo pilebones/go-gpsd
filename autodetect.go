@@ -49,7 +49,7 @@ func Autodetect(ctx context.Context) (*string, error) {
 		case path := <-pathQueue:
 			worker.CheckFile(path, ctx)
 		case <-ctx.Done():
-			return nil, fmt.Errorf("Reach timeout after %s", time.Now().Sub(startTime).String())
+			return nil, fmt.Errorf("Reach timeout after %s", time.Since(startTime).String())
 		}
 	}
 }

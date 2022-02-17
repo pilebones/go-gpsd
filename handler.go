@@ -16,11 +16,10 @@ func GPSHandler(resp http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		log.Println("Unable to serialize response data, err:", err.Error())
 		resp.WriteHeader(http.StatusInternalServerError)
-		resp.Write([]byte("Unable to serialize response data"))
+		_, _ = resp.Write([]byte("Unable to serialize response data"))
 		return
 	}
 
 	resp.WriteHeader(http.StatusOK)
-	resp.Write(data)
-	return
+	_, _ = resp.Write(data)
 }

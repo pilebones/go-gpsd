@@ -22,30 +22,23 @@ func processMessage(msg nmea.NMEA) {
 	// Update first
 	state.LastUpdate = time.Now()
 
-	switch msg.(type) {
+	switch msg := msg.(type) {
 	case *nmea.GPGGA:
-		gpgga := msg.(*nmea.GPGGA)
-		state.Latitude, state.Longitude = &gpgga.Latitude, &gpgga.Longitude
+		state.Latitude, state.Longitude = &msg.Latitude, &msg.Longitude
 	case *nmea.GPGLL:
-		gpgll := msg.(*nmea.GPGLL)
-		state.Latitude, state.Longitude = &gpgll.Latitude, &gpgll.Longitude
+		state.Latitude, state.Longitude = &msg.Latitude, &msg.Longitude
 	case *nmea.GPGSA:
-		gpgsa := msg.(*nmea.GPGSA)
-		status := gpgsa.FixStatus.String()
+		status := msg.FixStatus.String()
 		state.Status = &status
 	case *nmea.GPGSV:
-		gpgsv := msg.(*nmea.GPGSV)
-		state.NbSatellite = &(gpgsv.SatellitesInView)
+		state.NbSatellite = &msg.SatellitesInView
 	case *nmea.GPRMC:
-		gprmc := msg.(*nmea.GPRMC)
-		state.Speed = &gprmc.Speed
-		state.Latitude, state.Longitude = &gprmc.Latitude, &gprmc.Longitude
+		state.Speed = &msg.Speed
+		state.Latitude, state.Longitude = &msg.Latitude, &msg.Longitude
 	case *nmea.GPTXT:
-		gptxt := msg.(*nmea.GPTXT)
-		state.AntennaStatus = gptxt.AntennaStatus()
+		state.AntennaStatus = msg.AntennaStatus()
 	case *nmea.GPVTG:
-		gpvtg := msg.(*nmea.GPVTG)
-		state.Speed = &gpvtg.SpeedKmh
+		state.Speed = &msg.SpeedKmh
 	}
 }
 
