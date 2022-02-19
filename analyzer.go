@@ -51,7 +51,7 @@ func (w *FileAnalyzerWorker) CheckFile(path string, ctx context.Context) {
 	}
 
 	go func() {
-		// TODO: try multiple times to avoid misdetection when decode failure occured
+		// TODO: try multiple times to avoid misdetection when decode failure occurred
 		if _, err := gpsDev.ReadSentence(ctx); err != nil {
 			w.Analyzed <- NewFileAnalyzerResult(false, path, err)
 			return
