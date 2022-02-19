@@ -8,104 +8,66 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	nmea "github.com/pilebones/go-nmea"
 )
 
-const (
-	TIMEOUT            = time.Second * 5
-	AUTODETECT_TIMEOUT = time.Second * 5
-	LISTEN_ADDR        = "127.0.0.1:1234"
-)
-
-var (
-	charDevicePath, listenAddr *string
-	autoDetectMode             *bool
-	autoDetectTimeout, timeout *time.Duration
-)
-
-func init() {
-	charDevicePath = flag.String("input", "/dev/ttyUSB0", "Char device path related to the serial port of the GPS device")
-	autoDetectMode = flag.Bool("autodetect", false, "Allow to enable auto-detection of the GPS device (already plugged or hot-plugged)")
-	timeout = flag.Duration("timeout", TIMEOUT, "Max duration allowed to read and parse a GPS sentence from serial-port")
-	autoDetectTimeout = flag.Duration("autodetect-timeout", AUTODETECT_TIMEOUT, "Time spent to try to autodetect the GPS device")
-	listenAddr = flag.String("listen", LISTEN_ADDR, "Listen address for HTTP daemon")
-}
-
 func main() {
+	conf := new(Config)
+	flag.StringVar(&conf.GPSCharDevPath, "input", DefaultCharDevicePath, "char device path related to the serial port of the GPS device")
+	flag.BoolVar(&conf.EnableGPSAutodetection, "autodetect", DefaultEnableAutodetect, "allow to enable GPS device auto-detection (already plugged or hot-plugged)")
+	flag.DurationVar(&conf.GPSReaderTimeout, "timeout", DefaultGPSReaderTimeout, "max duration allowed to read and parse a GPS sentence from serial-port")
+	flag.DurationVar(&conf.AutodetectTimeout, "autodetect-timeout", DefaultAutodetectTimeout, "max duration for autodetecting GPS device")
+	flag.StringVar(&conf.ListenAddr, "addr", DefaultListenAddr, "Listen address for HTTP daemon")
 	flag.Parse()
 
-	var err error
-
-	if *autoDetectMode {
-		// Initialize context to stop goroutines when timeout or found device
-		ctx, cancel := context.WithTimeout(context.Background(), *autoDetectTimeout)
-		defer cancel()
-
-		log.Println("Start autodetecting GPS devices.")
-		// run job to autodetect GPS device
-		if charDevicePath, err = Autodetect(ctx); err != nil {
-			log.Fatalln("Unable to autodetect GPS device, err:", err.Error())
+	if conf.EnableGPSAutodetection {
+		log.Println("Starting GPS device auto-detection...")
+		var err error
+		if conf.GPSCharDevPath, err = Autodetect(conf); err != nil {
+			log.Fatalln(err)
 		}
-
-		if charDevicePath == nil {
-			log.Fatalln("Unable to autodetect GPS device in", autoDetectTimeout.String())
-		}
-
-		log.Println("Autodetect", *charDevicePath, " as a GPS device.")
 	} else {
-		// Initialize context to stop goroutines when timeout or read a valid GPS sentence
-		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		defer cancel()
-
-		log.Println("Analyzing", *charDevicePath, "...")
-
-		// Initialize and run worker
-		worker := NewFileAnalyzerWorker()
-		worker.CheckFile(*charDevicePath, ctx)
-
-		select {
-		case <-ctx.Done():
-			log.Fatalln("Unable to validate GPS device in", timeout.String())
-		case result := <-worker.Analyzed:
-			if result.Error != nil {
-				log.Fatalln(*charDevicePath, " is not a valid GPS device, err:", result.Error.Error())
-			}
-			if !result.Found {
-				log.Fatalln(*charDevicePath, " doesn't contains NMEA message like a GPS device")
-			}
+		log.Println("Analyzing", conf.GPSCharDevPath, "...")
+		if err := checkFile(conf.GPSReaderTimeout, conf.GPSCharDevPath); err != nil {
+			log.Fatalln(err)
 		}
 	}
 
+	log.Println("Selecting device", conf.GPSCharDevPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	onUnplugged := make(chan struct{}, 1)
+	go NotifyIfDeviceUnplugged(ctx, conf.GPSCharDevPath, onUnplugged)
+
 	// Try to open file or fatal
-	gpsDev, err := NewGPSDevice(*charDevicePath)
+	gps, err := NewGPSDevice(conf.GPSCharDevPath, conf.GPSReaderTimeout)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	queue, errors := make(chan nmea.NMEA), make(chan error)
-	quit := gpsDev.Monitor(queue, errors, *timeout)
-
-	// Signal handler to quit properly monitor mode
+	// Signals handler to quit properly monitor mode
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		select {
-		case <-signals:
-			log.Println("Exiting...")
-			quit <- struct{}{}
-			os.Exit(0)
-		case <-quit:
-			log.Println("Exiting...")
-			os.Exit(0)
-		}
-	}()
 
+	// Monitor GPS device to gather NMEA sentences
+	queue, errors := make(chan nmea.NMEA), make(chan error)
+	go gps.Monitor(ctx, queue, errors)
+
+	// NMEA sentences handling
 	go func() {
-		loopMonitor := true
-		for loopMonitor {
+		for {
 			select {
+			case <-signals:
+				log.Println("Exiting...")
+				cancel() // close properly monitor mode
+				os.Exit(0)
+			case <-onUnplugged:
+				log.Println("GPS device has been unplugged, exiting...")
+				cancel() // close properly monitor mode
+				os.Exit(1)
 			case msg := <-queue:
 				if msg == nil {
 					continue
@@ -115,19 +77,21 @@ func main() {
 				// log.Println(state.String())
 			case err := <-errors:
 				log.Println(err)
-				if !gpsDev.StillExists() {
+				/*if !gpsDev.StillExists() {
 					log.Println("GPS Device deconnected")
 					loopMonitor = false
 					quit <- struct{}{}
-				}
+				}*/
 			}
 		}
 	}()
 
-	s := &http.Server{Addr: *listenAddr}
+	// Run web server to provided GPS informations over an api
+	s := &http.Server{Addr: conf.ListenAddr}
 	router()
-	log.Println("Listening on", *listenAddr)
+	log.Println("Listening on", conf.ListenAddr)
 	if err := s.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+
 }
